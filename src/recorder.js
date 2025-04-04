@@ -6,8 +6,10 @@ export default function useAudioRecorder(transcribeAudio) {
     const audioDuration = ref(0);
     let mediaRecorder = null;
     let startTime = 0;
-    let intervalId = null;
     let stream = null;
+    let analyser = null;
+    let audioContext = null;
+    let silenceTimer = null;
 
     async function startRecording() {
         if (isRecording.value) return;
@@ -15,17 +17,48 @@ export default function useAudioRecorder(transcribeAudio) {
         try {
             stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             isRecording.value = true;
+            setupSilenceDetection(stream);
             startNewRecording();
-
-            // Start a new recording chunk every 5 seconds
-            intervalId = setInterval(() => {
-                if (isRecording.value) {
-                    mediaRecorder.stop(); // Stop the current chunk
-                }
-            }, 5000);
         } catch (error) {
             console.error("Error accessing microphone:", error);
         }
+    }
+
+    function setupSilenceDetection(stream) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const source = audioContext.createMediaStreamSource(stream);
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 512;
+        source.connect(analyser);
+
+        const bufferLength = analyser.fftSize;
+        const dataArray = new Uint8Array(bufferLength);
+
+        const checkSilence = () => {
+            analyser.getByteTimeDomainData(dataArray);
+            const isSilent = dataArray.every(val => Math.abs(val - 128) < 5); // Adjust threshold if needed
+
+            if (isSilent) {
+                if (!silenceTimer) {
+                    silenceTimer = setTimeout(() => {
+                        if (mediaRecorder && isRecording.value) {
+                            mediaRecorder.stop();
+                        }
+                    }, 2000); // 2 seconds of silence
+                }
+            } else {
+                if (silenceTimer) {
+                    clearTimeout(silenceTimer);
+                    silenceTimer = null;
+                }
+            }
+
+            if (isRecording.value) {
+                requestAnimationFrame(checkSilence);
+            }
+        };
+
+        checkSilence();
     }
 
     function startNewRecording() {
@@ -45,7 +78,6 @@ export default function useAudioRecorder(transcribeAudio) {
                 audioFiles.value.push(newBlob);
                 audioDuration.value += (performance.now() - startTime) / 1000;
 
-                // Send audio chunk to Whisper immediately
                 await transcribeAudio(newBlob);
             }
 
@@ -61,14 +93,8 @@ export default function useAudioRecorder(transcribeAudio) {
         if (mediaRecorder && isRecording.value) {
             isRecording.value = false;
             mediaRecorder.stop();
-            clearRecordingInterval();
-        }
-    }
-
-    function clearRecordingInterval() {
-        if (intervalId) {
-            clearInterval(intervalId);
-            intervalId = null;
+            if (silenceTimer) clearTimeout(silenceTimer);
+            if (audioContext) audioContext.close();
         }
     }
 
@@ -78,6 +104,5 @@ export default function useAudioRecorder(transcribeAudio) {
         isRecording,
         audioFiles,
         audioDuration,
-        clearRecordingInterval,
     };
 }
