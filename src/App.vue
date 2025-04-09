@@ -9,61 +9,108 @@
       <h3>Recorded Audio Files:</h3>
       <ul>
         <li v-for="(file, index) in audioFiles" :key="index">
-          <button @click="playAudio(file)">Play File {{ index + 1 }}</button>
+          <button @click="playSingleAudio(file, index)">Play File {{ index + 1 }}</button>
         </li>
       </ul>
 
-      <button @click="playAllAudio">Play All Files</button>
+      <button @click="playAllAudio" :disabled="audioFiles.length === 0">Play All Files</button>
     </div>
 
-    <audio v-if="currentAudio" ref="audioPlayer" controls></audio>
+    <audio v-if="currentAudioURL" ref="audioPlayer" controls @error="handlePlaybackError"></audio>
 
     <p v-if="audioDuration">Audio Duration: {{ audioDuration.toFixed(2) }} seconds</p>
     <p v-if="transcription">Transcription: {{ transcription }}</p>
+    <p v-if="whisperError" style="color: red;">Whisper Error: {{ whisperError }}</p>
+    <p v-if="playbackError" style="color: red;">Playback Error: {{ playbackError }}</p>
   </div>
 </template>
 
 <script setup>
-import { ref } from "vue";
+import { ref, onUnmounted } from "vue";
 import useWhisperTranscription from "./whisper.js";
 import useAudioRecorder from "./recorder.js";
 
-const { transcribeAudio, transcription } = useWhisperTranscription();
-const { startRecording, stopRecording, isRecording, audioFiles, audioDuration, clearRecordingInterval } = useAudioRecorder(transcribeAudio);
+const { transcribeAudio, transcription, whisperError } = useWhisperTranscription();
+const { startRecording, stopRecording, isRecording, audioFiles, audioDuration, clearSilenceTimer, error: recorderError } = useAudioRecorder(transcribeAudio);
 const audioPlayer = ref(null);
-const currentAudio = ref(null);
+const currentAudioURL = ref(null);
+const playbackError = ref(null);
+let objectURLs = []; // To store created object URLs
 
 async function handleStopRecording() {
   stopRecording();
-  clearRecordingInterval();
+  if (clearSilenceTimer) {
+    clearSilenceTimer();
+  }
+}
+
+function revokeObjectUrl(url) {
+  if (url) {
+    URL.revokeObjectURL(url);
+    objectURLs = objectURLs.filter(u => u !== url);
+  }
 }
 
 // Play a specific audio file from the recorded files
-function playAudio(file) {
+function playSingleAudio(file, index) {
+  playbackError.value = null;
+  if (currentAudioURL.value) {
+    revokeObjectUrl(currentAudioURL.value);
+    if (audioPlayer.value) {
+      audioPlayer.value.onended = null; // Reset playAll listener
+    }
+  }
   if (file) {
-      const audioURL = URL.createObjectURL(file);
-      currentAudio.value = audioURL;
+    const audioURL = URL.createObjectURL(file);
+    currentAudioURL.value = audioURL;
+    objectURLs.push(audioURL);
+    if (audioPlayer.value) {
       audioPlayer.value.src = audioURL;
       audioPlayer.value.play();
+    }
   }
 }
 
 // Play all the audio files sequentially
 function playAllAudio() {
-  if (audioFiles.value.length === 0) return;
+  playbackError.value = null;
+  if (audioFiles.value.length === 0 || !audioPlayer.value) return;
 
   let currentIndex = 0;
+
   const playNext = () => {
-      if (currentIndex < audioFiles.value.length) {
-          const file = audioFiles.value[currentIndex];
-          playAudio(file);
-          currentIndex++;
-      }
+    if (currentIndex < audioFiles.value.length) {
+      const file = audioFiles.value[currentIndex];
+      const audioURL = URL.createObjectURL(file);
+      revokeObjectUrl(currentAudioURL.value); // Revoke previous URL
+      currentAudioURL.value = audioURL;
+      objectURLs.push(audioURL);
+      audioPlayer.value.src = audioURL;
+      audioPlayer.value.onended = () => {
+        currentIndex++;
+        playNext();
+      };
+      audioPlayer.value.play();
+    } else {
+      // All files played, reset onended listener
+      audioPlayer.value.onended = null;
+      currentAudioURL.value = null;
+    }
   };
 
-  audioPlayer.value.onended = playNext;
   playNext();
 }
+
+function handlePlaybackError(event) {
+  console.error("Audio playback error:", event);
+  playbackError.value = "An error occurred during audio playback.";
+}
+
+onUnmounted(() => {
+  // Revoke all object URLs on component unmount
+  objectURLs.forEach(url => URL.revokeObjectURL(url));
+  objectURLs = [];
+});
 </script>
 
 <style>
