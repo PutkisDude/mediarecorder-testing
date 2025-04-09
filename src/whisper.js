@@ -13,6 +13,8 @@ export default function useWhisperTranscription() {
         let filename = "recording";
         if (audioBlob.type === "audio/webm") {
             filename += ".webm";
+        } else if (audioBlob.type === "audio/webm;codecs=opus") {
+            filename += ".webm";
         } else if (audioBlob.type === "audio/mp4") {
             filename += ".mp4";
         } else if (audioBlob.type === "audio/mpeg") {

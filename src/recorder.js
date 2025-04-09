@@ -4,13 +4,30 @@ export default function useAudioRecorder(transcribeAudio) {
     const isRecording = ref(false);
     const audioFiles = ref([]);
     const audioDuration = ref(0);
-    const error = ref(null); // To track errors
+    const error = ref(null);
     let mediaRecorder = null;
     let startTime = 0;
     let stream = null;
     let analyser = null;
     let audioContext = null;
     let silenceTimer = null;
+
+    // 🔍 Detect supported MIME type
+    function getSupportedMimeType() {
+        const preferredTypes = [
+            "audio/webm;codecs=opus",
+            "audio/webm",
+            "audio/mp4",
+            "audio/mpeg",
+            "audio/wav"
+        ];
+        for (const type of preferredTypes) {
+            if (MediaRecorder.isTypeSupported(type)) {
+                return type;
+            }
+        }
+        return ""; // fallback: browser default
+    }
 
     async function startRecording() {
         if (isRecording.value) return;
@@ -31,7 +48,7 @@ export default function useAudioRecorder(transcribeAudio) {
         } catch (err) {
             console.error("Error accessing microphone:", err);
             error.value = err;
-            stopStream(); // Ensure stream is stopped on error
+            stopStream();
         }
     }
 
@@ -47,10 +64,10 @@ export default function useAudioRecorder(transcribeAudio) {
             const dataArray = new Uint8Array(bufferLength);
 
             const checkSilence = () => {
-                if (!isRecording.value) return; // Stop checking if not recording
+                if (!isRecording.value) return;
 
                 analyser.getByteTimeDomainData(dataArray);
-                const isSilent = dataArray.every(val => Math.abs(val - 128) < 5); // Adjust threshold if needed
+                const isSilent = dataArray.every(val => Math.abs(val - 128) < 5);
 
                 if (isSilent) {
                     if (!silenceTimer) {
@@ -58,7 +75,7 @@ export default function useAudioRecorder(transcribeAudio) {
                             if (mediaRecorder && isRecording.value) {
                                 mediaRecorder.stop();
                             }
-                        }, 2000); // 2 seconds of silence
+                        }, 2000);
                     }
                 } else {
                     if (silenceTimer) {
@@ -74,44 +91,56 @@ export default function useAudioRecorder(transcribeAudio) {
         } catch (err) {
             console.error("Error setting up silence detection:", err);
             error.value = err;
-            stopStream(); // Ensure stream is stopped on error
+            stopStream();
         }
     }
 
     function startNewRecording() {
-        if (!stream) return; // Ensure stream exists
+        if (!stream) return;
 
-        mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/mp4" });
-        let audioChunks = [];
-        startTime = performance.now();
+        const mimeType = getSupportedMimeType();
+        console.log("Using MediaRecorder MIME type:", mimeType || "default");
 
-        mediaRecorder.ondataavailable = (event) => {
-            if (event.data.size > 0) {
-                audioChunks.push(event.data);
-            }
-        };
+        try {
+            mediaRecorder = mimeType
+                ? new MediaRecorder(stream, { mimeType })
+                : new MediaRecorder(stream);
 
-        mediaRecorder.onstop = async () => {
-            if (audioChunks.length > 0) {
-                const newBlob = new Blob(audioChunks, { type: "audio/mp4" });
-                audioFiles.value.push(newBlob);
-                audioDuration.value += (performance.now() - startTime) / 1000;
+            let audioChunks = [];
+            startTime = performance.now();
 
-                await transcribeAudio(newBlob);
-            }
+            mediaRecorder.ondataavailable = (event) => {
+                if (event.data.size > 0) {
+                    audioChunks.push(event.data);
+                }
+            };
 
-            if (isRecording.value) {
-                startNewRecording(); // Start a new recording chunk
-            }
-        };
+            mediaRecorder.onstop = async () => {
+                if (audioChunks.length > 0) {
+                    const newBlob = new Blob(audioChunks, { type: mimeType || undefined });
+                    audioFiles.value.push(newBlob);
+                    audioDuration.value += (performance.now() - startTime) / 1000;
 
-        mediaRecorder.onerror = (event) => {
-            console.error("MediaRecorder error:", event);
-            error.value = new Error("MediaRecorder error");
+                    await transcribeAudio(newBlob);
+                }
+
+                if (isRecording.value) {
+                    startNewRecording(); // continue recording
+                }
+            };
+
+            mediaRecorder.onerror = (event) => {
+                console.error("MediaRecorder error:", event);
+                error.value = new Error("MediaRecorder error");
+                stopRecording();
+            };
+
+            mediaRecorder.start();
+        } catch (err) {
+            console.error("Error initializing MediaRecorder:", err);
+            error.value = err;
             stopRecording();
-        };
-
-        mediaRecorder.start();
+        }
     }
 
     function stopRecording() {
@@ -146,7 +175,7 @@ export default function useAudioRecorder(transcribeAudio) {
     }
 
     onBeforeUnmount(() => {
-        stopRecording(); // Ensure resources are cleaned up on unmount
+        stopRecording();
     });
 
     return {
@@ -155,7 +184,7 @@ export default function useAudioRecorder(transcribeAudio) {
         isRecording,
         audioFiles,
         audioDuration,
-        error, 
+        error,
         clearRecordings,
     };
 }
